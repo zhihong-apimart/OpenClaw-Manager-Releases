@@ -19,7 +19,7 @@ OpenClaw Manager 是 [OpenClaw](https://github.com/open-claw/openclaw) AI 网关
 ### Windows
 
 1. 下载 `openclaw-manager-win-x64.exe`
-2. 双击运行，浏览器会自动打开管理页面
+2. 右键 → **以管理员身份运行**，浏览器会自动打开管理页面
 3. 按照向导创建你的第一个实例
 
 ### macOS
