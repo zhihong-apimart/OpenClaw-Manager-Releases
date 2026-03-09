@@ -83,7 +83,14 @@ install_pkg() {
     local pkg="$1"
     step "安装 $pkg ..."
     case "$PKG_MANAGER" in
-        apt)    apt-get install -y -q "$pkg" 2>/dev/null ;;
+        apt)
+            DEBIAN_FRONTEND=noninteractive \
+            NEEDRESTART_MODE=a \
+            apt-get install -y -q \
+                -o Dpkg::Use-Pty=0 \
+                -o DPkg::Options::="--force-confold" \
+                "$pkg" 2>/dev/null
+            ;;
         dnf)    dnf install -y -q "$pkg" 2>/dev/null ;;
         yum)    yum install -y -q "$pkg" 2>/dev/null ;;
         zypper) zypper install -y -q "$pkg" 2>/dev/null ;;
@@ -492,7 +499,7 @@ fi
 
 # 10. 启动服务
 section "启动服务"
-systemctl start "$SERVICE_NAME"
+systemctl start "$SERVICE_NAME" || true
 info "服务启动指令已发出"
 
 # 11. 健康检查
