@@ -202,6 +202,45 @@ NGINX_EOF
     else
         warn "Nginx 配置语法有问题，请检查: sudo nginx -t"
     fi
+
+    # --- 封堵内部端口，防止绕过 nginx 直连 ---
+    # openclaw-manager 监听 *:51942，需要 iptables 阻断外部直连
+    if command -v iptables &>/dev/null; then
+        # 先删除已有规则（避免重复添加）
+        iptables -D INPUT -p tcp --dport "${WEB_PORT}" ! -s 127.0.0.1 -j DROP 2>/dev/null || true
+        # 添加新规则：51942 只允许本机访问
+        iptables -I INPUT -p tcp --dport "${WEB_PORT}" ! -s 127.0.0.1 -j DROP
+        info "iptables: 端口 ${WEB_PORT} 已限制为仅本机可访问 ✓"
+
+        # 持久化 iptables 规则（支持 iptables-persistent）
+        if command -v netfilter-persistent &>/dev/null; then
+            netfilter-persistent save 2>/dev/null || true
+        elif command -v iptables-save &>/dev/null; then
+            # 保存到常见路径
+            mkdir -p /etc/iptables
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+            # 写一个 systemd oneshot 保证开机恢复
+            if [[ ! -f /etc/systemd/system/iptables-restore.service ]]; then
+                cat > /etc/systemd/system/iptables-restore.service << 'IPTR_EOF'
+[Unit]
+Description=Restore iptables rules
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+IPTR_EOF
+                systemctl enable iptables-restore.service --quiet 2>/dev/null || true
+            fi
+        fi
+    else
+        warn "iptables 未找到，端口 ${WEB_PORT} 可能仍可被外部直连，建议在防火墙/安全组中手动封锁"
+    fi
 }
 
 # 安装一键改密工具到 PATH
