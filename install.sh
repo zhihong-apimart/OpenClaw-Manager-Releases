@@ -202,54 +202,6 @@ NGINX_EOF
     else
         warn "Nginx 配置语法有问题，请检查: sudo nginx -t"
     fi
-
-    # --- 封堵内部端口，防止绕过 nginx 直连 ---
-    # openclaw-manager 监听 *:51942，用 iptables 阻断外部直连（只允许 lo 接口本机访问）
-    _block_internal_port() {
-        local port="$1"
-        # 先清除旧规则（幂等）
-        iptables -D INPUT -i lo -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || true
-        iptables -D INPUT -p tcp --dport "${port}" -j DROP 2>/dev/null || true
-        # 允许 loopback（nginx 转发走 lo）
-        iptables -I INPUT 1 -p tcp --dport "${port}" -j DROP
-        iptables -I INPUT 1 -i lo -p tcp --dport "${port}" -j ACCEPT
-        info "iptables: 端口 ${port} 已限制为仅本机可访问 ✓"
-
-        # 持久化规则
-        if command -v netfilter-persistent &>/dev/null; then
-            netfilter-persistent save 2>/dev/null || true
-        elif command -v iptables-save &>/dev/null; then
-            mkdir -p /etc/iptables
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-            # 开机自动恢复
-            if [[ ! -f /etc/systemd/system/iptables-restore-ocm.service ]]; then
-                cat > /etc/systemd/system/iptables-restore-ocm.service << 'IPTR_EOF'
-[Unit]
-Description=Restore iptables rules for OpenClaw Manager
-After=network-pre.target
-Before=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c 'test -f /etc/iptables/rules.v4 && /sbin/iptables-restore < /etc/iptables/rules.v4 || true'
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-IPTR_EOF
-                systemctl enable iptables-restore-ocm.service --quiet 2>/dev/null || true
-            else
-                # 每次升级都刷新规则文件
-                iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-            fi
-        fi
-    }
-
-    if command -v iptables &>/dev/null; then
-        _block_internal_port "${WEB_PORT}"
-    else
-        warn "iptables 未找到，端口 ${WEB_PORT} 可能仍可被外部直连，建议在防火墙/安全组中手动封锁"
-    fi
 }
 
 # 安装一键改密工具到 PATH
@@ -493,6 +445,50 @@ info "systemd 服务已注册并设置开机自启 ✓"
 # 9. Nginx 访问控制
 setup_nginx
 install_chpasswd_tool
+
+# 9b. 封堵内部端口（在函数外执行，避免 pipe+heredoc 嵌套问题）
+section "封锁内部服务端口"
+if command -v iptables &>/dev/null; then
+    # 幂等：先清旧规则再添加
+    iptables -D INPUT -i lo -p tcp --dport "${WEB_PORT}" -j ACCEPT 2>/dev/null || true
+    iptables -D INPUT -p tcp --dport "${WEB_PORT}" -j DROP 2>/dev/null || true
+    iptables -I INPUT 1 -p tcp --dport "${WEB_PORT}" -j DROP
+    iptables -I INPUT 1 -i lo -p tcp --dport "${WEB_PORT}" -j ACCEPT
+    info "iptables: 端口 ${WEB_PORT} 已限制为仅本机可访问 ✓"
+
+    # 持久化（开机恢复）
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save 2>/dev/null || true
+    elif command -v iptables-save &>/dev/null; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        # 写 systemd 恢复 unit（文件路径不含 heredoc，直接 echo）
+        SVC_FILE="/etc/systemd/system/iptables-restore-ocm.service"
+        if [[ ! -f "${SVC_FILE}" ]]; then
+            {
+                echo "[Unit]"
+                echo "Description=Restore iptables rules for OpenClaw Manager"
+                echo "After=network-pre.target"
+                echo ""
+                echo "[Service]"
+                echo "Type=oneshot"
+                echo "ExecStart=/bin/sh -c 'test -f /etc/iptables/rules.v4 && /sbin/iptables-restore < /etc/iptables/rules.v4 || true'"
+                echo "RemainAfterExit=yes"
+                echo ""
+                echo "[Install]"
+                echo "WantedBy=multi-user.target"
+            } > "${SVC_FILE}"
+            systemctl daemon-reload
+            systemctl enable iptables-restore-ocm.service --quiet 2>/dev/null || true
+        else
+            # 升级时只刷新规则文件，unit 已存在
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        fi
+        info "iptables 规则已持久化（重启后自动恢复）✓"
+    fi
+else
+    warn "iptables 未找到，端口 ${WEB_PORT} 建议在云服务商安全组中手动封锁"
+fi
 
 # 10. 启动服务
 section "启动服务"
