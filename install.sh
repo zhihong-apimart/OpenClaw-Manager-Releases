@@ -204,40 +204,49 @@ NGINX_EOF
     fi
 
     # --- 封堵内部端口，防止绕过 nginx 直连 ---
-    # openclaw-manager 监听 *:51942，需要 iptables 阻断外部直连
-    if command -v iptables &>/dev/null; then
-        # 先删除已有规则（避免重复添加）
-        iptables -D INPUT -p tcp --dport "${WEB_PORT}" ! -s 127.0.0.1 -j DROP 2>/dev/null || true
-        # 添加新规则：51942 只允许本机访问
-        iptables -I INPUT -p tcp --dport "${WEB_PORT}" ! -s 127.0.0.1 -j DROP
-        info "iptables: 端口 ${WEB_PORT} 已限制为仅本机可访问 ✓"
+    # openclaw-manager 监听 *:51942，用 iptables 阻断外部直连（只允许 lo 接口本机访问）
+    _block_internal_port() {
+        local port="$1"
+        # 先清除旧规则（幂等）
+        iptables -D INPUT -i lo -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || true
+        iptables -D INPUT -p tcp --dport "${port}" -j DROP 2>/dev/null || true
+        # 允许 loopback（nginx 转发走 lo）
+        iptables -I INPUT 1 -p tcp --dport "${port}" -j DROP
+        iptables -I INPUT 1 -i lo -p tcp --dport "${port}" -j ACCEPT
+        info "iptables: 端口 ${port} 已限制为仅本机可访问 ✓"
 
-        # 持久化 iptables 规则（支持 iptables-persistent）
+        # 持久化规则
         if command -v netfilter-persistent &>/dev/null; then
             netfilter-persistent save 2>/dev/null || true
         elif command -v iptables-save &>/dev/null; then
-            # 保存到常见路径
             mkdir -p /etc/iptables
             iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-            # 写一个 systemd oneshot 保证开机恢复
-            if [[ ! -f /etc/systemd/system/iptables-restore.service ]]; then
-                cat > /etc/systemd/system/iptables-restore.service << 'IPTR_EOF'
+            # 开机自动恢复
+            if [[ ! -f /etc/systemd/system/iptables-restore-ocm.service ]]; then
+                cat > /etc/systemd/system/iptables-restore-ocm.service << 'IPTR_EOF'
 [Unit]
-Description=Restore iptables rules
-Before=network-pre.target
-Wants=network-pre.target
+Description=Restore iptables rules for OpenClaw Manager
+After=network-pre.target
+Before=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+ExecStart=/bin/sh -c 'test -f /etc/iptables/rules.v4 && /sbin/iptables-restore < /etc/iptables/rules.v4 || true'
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 IPTR_EOF
-                systemctl enable iptables-restore.service --quiet 2>/dev/null || true
+                systemctl enable iptables-restore-ocm.service --quiet 2>/dev/null || true
+            else
+                # 每次升级都刷新规则文件
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
             fi
         fi
+    }
+
+    if command -v iptables &>/dev/null; then
+        _block_internal_port "${WEB_PORT}"
     else
         warn "iptables 未找到，端口 ${WEB_PORT} 可能仍可被外部直连，建议在防火墙/安全组中手动封锁"
     fi
