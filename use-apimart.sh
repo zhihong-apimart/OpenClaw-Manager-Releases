@@ -3,7 +3,7 @@
 #  APIMart 一键接入脚本
 #  将已安装的 OpenClaw 切换为 APIMart 中转节点
 #  支持: Ubuntu / Debian / CentOS / RHEL / Rocky / Alma / OpenSUSE / macOS
-#  用法: curl -fsSL https://raw.githubusercontent.com/zhihong-apimart/OpenClaw-Manager-Releases/main/use-apimart.sh | bash -s -- YOUR_API_KEY
+#  用法: curl -fsSLo use-apimart.sh https://raw.githubusercontent.com/zhihong-apimart/OpenClaw-Manager-Releases/main/use-apimart.sh && bash use-apimart.sh YOUR_API_KEY
 # =============================================================================
 set -euo pipefail
 
