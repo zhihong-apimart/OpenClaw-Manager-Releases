@@ -14,13 +14,29 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# ---------- 依赖检查 ----------
-for cmd in jq; do
-  if ! command -v "$cmd" &>/dev/null; then
-    err "需要 $cmd，请先安装: brew install $cmd / apt install $cmd"
+# ---------- 依赖检查（自动安装 jq）----------
+if ! command -v jq &>/dev/null; then
+  warn "未检测到 jq，尝试自动安装..."
+  if command -v apt-get &>/dev/null; then
+    sudo apt-get install -y jq -qq 2>/dev/null || apt-get install -y jq -qq 2>/dev/null
+  elif command -v yum &>/dev/null; then
+    sudo yum install -y jq -q 2>/dev/null || yum install -y jq -q 2>/dev/null
+  elif command -v dnf &>/dev/null; then
+    sudo dnf install -y jq -q 2>/dev/null || dnf install -y jq -q 2>/dev/null
+  elif command -v brew &>/dev/null; then
+    brew install jq
+  elif command -v apk &>/dev/null; then
+    apk add --no-cache jq
+  else
+    err "无法自动安装 jq，请手动安装后重试: https://stedolan.github.io/jq/download/"
     exit 1
   fi
-done
+  if ! command -v jq &>/dev/null; then
+    err "jq 安装失败，请手动安装: https://stedolan.github.io/jq/download/"
+    exit 1
+  fi
+  ok "jq 已安装"
+fi
 
 # ---------- API Key ----------
 API_KEY="${1:-}"
