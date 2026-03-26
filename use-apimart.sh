@@ -62,7 +62,6 @@ if ! command -v jq &>/dev/null; then
 fi
 info "jq 就绪 ✓"
 
-# OpenClaw 检测
 if ! command -v openclaw &>/dev/null; then
     error "未检测到 OpenClaw，请先安装: curl -fsSL https://openclaw.ai/install.sh | bash"
 fi
@@ -90,22 +89,22 @@ section "Step 3/4  配置节点与模型"
 
 echo ""
 echo -e "  ${BOLD}选择 APIMart 节点：${RESET}"
-echo "    1) 国际节点 (api.apimart.ai)       ← 海外服务器 / 国际用户"
-echo "    2) 香港节点 (cn-api.apimart.ai)    ← 国内用户 / 国内服务器"
+echo "    1) 国际节点  ← 海外服务器 / 国际用户"
+echo "    2) 香港节点  ← 国内用户 / 国内服务器"
 echo ""
 read -rp "  请输入选项 [1/2，直接回车默认国际节点]: " NODE_CHOICE
 case "${NODE_CHOICE:-1}" in
     2) HOST="cn-api.apimart.ai" ; NODE_NAME="香港节点" ;;
     *) HOST="api.apimart.ai"    ; NODE_NAME="国际节点" ;;
 esac
-info "已选: ${NODE_NAME} (${HOST}) ✓"
+info "已选: ${NODE_NAME} ✓"
 
 echo ""
 echo -e "  ${BOLD}选择默认对话模型：${RESET}"
-echo "    1) gpt-5.3            — OpenAI 旗舰，最强综合能力"
-echo "    2) claude-sonnet-4-6  — Anthropic Claude，擅长写作/分析"
-echo "    3) deepseek-v3.2      — 国产精品，高性价比"
-echo "    4) gemini-2.5-pro     — Google 最新旗舰"
+echo "    1) GPT-5.3            — OpenAI 旗舰，最强综合能力"
+echo "    2) Claude Sonnet 4.6  — Anthropic Claude，擅长写作/分析"
+echo "    3) DeepSeek V3.2      — 国产精品，高性价比"
+echo "    4) Gemini 2.5 Pro     — Google 最新旗舰"
 echo ""
 read -rp "  请输入选项 [1-4，直接回车默认 GPT-5.3]: " MODEL_CHOICE
 case "${MODEL_CHOICE:-1}" in
@@ -146,9 +145,9 @@ PROVIDERS=$(jq -n \
       "api": "anthropic-messages",
       "apiKey": $apiKey,
       "models": [
-        {"id": "claude-opus-4-6",         "name": "Claude Opus 4.6"},
-        {"id": "claude-sonnet-4-6",       "name": "Claude Sonnet 4.6"},
-        {"id": "claude-opus-4-5-20251101","name": "Claude Opus 4.5"},
+        {"id": "claude-opus-4-6",          "name": "Claude Opus 4.6"},
+        {"id": "claude-sonnet-4-6",        "name": "Claude Sonnet 4.6"},
+        {"id": "claude-opus-4-5-20251101", "name": "Claude Opus 4.5"},
         {"id": "claude-sonnet-4-5-20250929","name": "Claude Sonnet 4.5"},
         {"id": "claude-haiku-4-5-20251001","name": "Claude Haiku 4.5"}
       ]
@@ -158,34 +157,28 @@ PROVIDERS=$(jq -n \
       "api": "google-generative-ai",
       "apiKey": $apiKey,
       "models": [
-        {"id": "gemini-2.5-pro",            "name": "Gemini 2.5 Pro"},
-        {"id": "gemini-2.5-flash",          "name": "Gemini 2.5 Flash"},
-        {"id": "gemini-3.1-flash-preview",  "name": "Gemini 3.1 Flash Preview"},
-        {"id": "gemini-3.1-pro-preview",    "name": "Gemini 3.1 Pro Preview"}
+        {"id": "gemini-2.5-pro",           "name": "Gemini 2.5 Pro"},
+        {"id": "gemini-2.5-flash",         "name": "Gemini 2.5 Flash"},
+        {"id": "gemini-3.1-flash-preview", "name": "Gemini 3.1 Flash Preview"},
+        {"id": "gemini-3.1-pro-preview",   "name": "Gemini 3.1 Pro Preview"}
       ]
     }
   }')
 
 # =============================================================================
-#  Step 4: 写入配置
+#  Step 4: 写入配置并重启
 # =============================================================================
 section "Step 4/4  写入配置并重启 OpenClaw"
 
 HOME_DIR="$HOME"
 ALL_CONFIGS=()
-ALL_NAMES=()
 
 if [ -f "$HOME_DIR/.openclaw/openclaw.json" ]; then
     ALL_CONFIGS+=("$HOME_DIR/.openclaw/openclaw.json")
-    ALL_NAMES+=("default")
 fi
 for d in "$HOME_DIR"/.openclaw-*/; do
     [ -d "$d" ] || continue
-    if [ -f "${d}openclaw.json" ]; then
-        ALL_CONFIGS+=("${d}openclaw.json")
-        name=$(basename "$d"); name="${name#.openclaw-}"
-        ALL_NAMES+=("$name")
-    fi
+    [ -f "${d}openclaw.json" ] && ALL_CONFIGS+=("${d}openclaw.json")
 done
 
 # 没有配置则自动创建
@@ -195,21 +188,20 @@ if [ ${#ALL_CONFIGS[@]} -eq 0 ]; then
     echo '{"models":{},"agents":{"defaults":{"model":{"primary":""}}}}' \
         > "$HOME_DIR/.openclaw/openclaw.json"
     ALL_CONFIGS+=("$HOME_DIR/.openclaw/openclaw.json")
-    ALL_NAMES+=("default")
     info "配置目录已创建 ✓"
 fi
 
-# 写入配置
+# 写入配置（备份用固定名称，恢复命令始终一致）
 UPDATED=0
 for cfg in "${ALL_CONFIGS[@]}"; do
-    cp "$cfg" "${cfg}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$cfg" "${cfg}.before-apimart" 2>/dev/null || true
     TEMP=$(mktemp)
     if jq --argjson providers "$PROVIDERS" \
           --arg model "$DEFAULT_MODEL" \
           '.models.providers = $providers | .agents.defaults.model.primary = $model' \
           "$cfg" > "$TEMP" 2>/dev/null && [ -s "$TEMP" ]; then
         mv "$TEMP" "$cfg"
-        info "配置已更新: $cfg ✓"
+        info "配置已更新 ✓"
         UPDATED=$((UPDATED + 1))
     else
         rm -f "$TEMP"
@@ -228,46 +220,30 @@ elif openclaw gateway start &>/dev/null 2>&1; then
     sleep 2
     info "OpenClaw Gateway 已启动 ✓"
 else
-    warn "Gateway 自动重启失败，请手动执行: openclaw gateway restart"
+    warn "Gateway 未能自动重启，请手动执行: openclaw gateway restart"
 fi
 
 # =============================================================================
-#  完成！傻瓜式指引
+#  完成
 # =============================================================================
 echo ""
 echo -e "${BOLD}${GREEN}"
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║                                                      ║"
-echo "  ║      🎉  APIMart 接入成功！                          ║"
+echo "  ║      🎉  接入成功！刷新 OpenClaw 即可使用            ║"
 echo "  ║                                                      ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
-
-echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${BOLD}  ✅ 配置摘要${RESET}"
-echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo ""
-echo -e "  节点：     ${CYAN}${BOLD}${HOST}${RESET}"
-echo -e "  默认模型： ${CYAN}${BOLD}${MODEL_NAME}${RESET}"
-echo -e "  已更新：   ${CYAN}${BOLD}${UPDATED} 个配置文件${RESET}"
+echo -e "  已接入模型：${BOLD}GPT / Claude / Gemini / DeepSeek${RESET} 等"
+echo -e "  默认模型：  ${CYAN}${BOLD}${MODEL_NAME}${RESET}"
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "${BOLD}  📌 接下来怎么用${RESET}"
+echo -e "${BOLD}  🆘 遇到问题？复制以下命令处理${RESET}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
-echo -e "  ${BOLD}1. 打开你的 OpenClaw，在模型列表选择 APIMart 系列模型${RESET}"
-echo -e "     即可开始对话，支持 GPT / Claude / Gemini / DeepSeek 等"
+echo -e "  ${BOLD}模型列表没更新 / 连不上？重启 OpenClaw：${RESET}"
+echo -e "  ${CYAN}openclaw gateway restart${RESET}"
 echo ""
-echo -e "  ${BOLD}2. 切换回默认模型，重新运行本脚本即可${RESET}"
-echo ""
-echo -e "  ${BOLD}3. 如果模型列表没有更新，重启 OpenClaw：${RESET}"
-echo -e "     ${CYAN}openclaw gateway restart${RESET}"
-echo ""
-echo -e "  ${BOLD}4. 查看 Gateway 状态：${RESET}"
-echo -e "     ${CYAN}openclaw gateway status${RESET}"
-echo ""
-echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo ""
-echo -e "  配置备份保存在 ${CYAN}~/.openclaw/openclaw.json.bak.*${RESET}，随时可恢复"
-echo -e "  💬 遇到问题：${CYAN}https://github.com/zhihong-apimart/OpenClaw-Manager-Releases/issues${RESET}"
+echo -e "  ${BOLD}出问题想恢复到接入前的状态：${RESET}"
+echo -e "  ${CYAN}cp ~/.openclaw/openclaw.json.before-apimart ~/.openclaw/openclaw.json && openclaw gateway restart${RESET}"
 echo ""
