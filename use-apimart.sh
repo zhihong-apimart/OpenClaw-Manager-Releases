@@ -176,6 +176,7 @@ for cfg in "${ALL_CONFIGS[@]}"; do
         | .gateway.mode = "local"
         | .gateway.bind = "lan"
         | .gateway.controlUi.allowedOrigins = ["*"]
+        | if (.gateway.auth.token? // "" | length) == 0 then .gateway.auth.token = (now | tostring | ltrimstr("0") | gsub("[^a-z0-9]";"") | .[0:48]) else . end
         ' "$cfg" > "$TEMP" 2>/dev/null && [ -s "$TEMP" ]; then
         mv "$TEMP" "$cfg"
         info "配置写入 ✓"
@@ -186,12 +187,26 @@ for cfg in "${ALL_CONFIGS[@]}"; do
 done
 [ "$UPDATED" -eq 0 ] && error "配置写入失败"
 
-# 生成固定 Gateway Token
-GW_TOKEN=$(openssl rand -hex 24 2>/dev/null || cat /proc/sys/kernel/random/uuid | tr -d '-')
-step "生成 Gateway Token..."
+# 从配置文件读取 auth token（OpenClaw 自动生成的）
+GW_TOKEN=$(python3 -c "import json; d=json.load(open('${HOME_DIR}/.openclaw/openclaw.json')); print(d.get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)
+# 如果配置里没有，用 openssl 生成并写入
+if [ -z "$GW_TOKEN" ]; then
+    GW_TOKEN=$(openssl rand -hex 24 2>/dev/null || echo "apimart$(date +%s)")
+    python3 -c "
+import json
+f=open('${HOME_DIR}/.openclaw/openclaw.json'); d=json.load(f); f.close()
+d.setdefault('gateway',{}).setdefault('auth',{})['token']='${GW_TOKEN}'
+open('${HOME_DIR}/.openclaw/openclaw.json','w').write(json.dumps(d,indent=2))
+" 2>/dev/null || true
+fi
+step "Gateway Token 已就绪"
 
-# 创建 system 级 systemd service（root 权限，开机自启，不依赖登录 session）
+# 创建 system 级 systemd service
 if [ "$(id -u)" = "0" ] && command -v systemctl &>/dev/null; then
+    NODE_BIN=$(which node 2>/dev/null || echo "/usr/bin/node")
+    OPENCLAW_JS=$(find /usr /usr/local -name "index.js" -path "*/openclaw/dist/*" 2>/dev/null | head -1)
+    [ -z "$OPENCLAW_JS" ] && OPENCLAW_JS="/usr/lib/node_modules/openclaw/dist/index.js"
+
     cat > /etc/systemd/system/openclaw-gateway.service << EOF
 [Unit]
 Description=OpenClaw Gateway
@@ -202,8 +217,7 @@ Type=simple
 User=root
 Environment=HOME=/root
 Environment=OPENCLAW_GATEWAY_PORT=18789
-Environment=OPENCLAW_GATEWAY_TOKEN=${GW_TOKEN}
-ExecStart=/usr/bin/node /usr/lib/node_modules/openclaw/dist/index.js gateway --port 18789
+ExecStart=${NODE_BIN} ${OPENCLAW_JS} gateway --port 18789
 Restart=always
 RestartSec=5
 
@@ -213,11 +227,10 @@ EOF
     systemctl daemon-reload
     systemctl enable openclaw-gateway &>/dev/null
     systemctl restart openclaw-gateway
-    sleep 4
-    info "Gateway 系统服务已启动 ✓"
+    sleep 6
+    systemctl is-active openclaw-gateway &>/dev/null && info "Gateway 系统服务已启动 ✓" || warn "Gateway 启动异常，请检查: journalctl -u openclaw-gateway -n 20"
 else
-    # 非 root 或无 systemd，用 openclaw 自带方式
-    OPENCLAW_GATEWAY_TOKEN="$GW_TOKEN" openclaw gateway restart &>/dev/null 2>&1 || true
+    openclaw gateway restart &>/dev/null 2>&1 || true
     sleep 3
     info "Gateway 已重启 ✓"
 fi
