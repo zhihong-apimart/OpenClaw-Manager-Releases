@@ -191,7 +191,7 @@ for cfg in "${ALL_CONFIGS[@]}"; do
 done
 [ "$UPDATED" -eq 0 ] && error "配置写入失败，请检查 OpenClaw 是否正确安装"
 
-# 确保 gateway.mode=local（OpenClaw 要求，否则 gateway 无法启动）
+# 确保 gateway.mode=local 并开放 controlUi 访问权限
 for cfg in "${ALL_CONFIGS[@]}"; do
     python3 - "$cfg" << 'PYEOF'
 import json, sys
@@ -203,9 +203,13 @@ if gw.get('mode') != 'local':
     gw['mode'] = 'local'; changed = True
 if gw.get('bind') not in ('lan', 'auto'):
     gw['bind'] = 'lan'; changed = True
+# 开放 controlUi 允许外网访问 Manager 界面
+cui = gw.setdefault('controlUi', {})
+if cui.get('allowedOrigins') != ['*']:
+    cui['allowedOrigins'] = ['*']; changed = True
 if changed:
     with open(path, 'w') as f: json.dump(d, f, indent=2)
-    print("gateway.mode patched")
+    print("gateway config patched")
 PYEOF
 done
 
