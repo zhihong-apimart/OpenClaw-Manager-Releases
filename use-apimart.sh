@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  APIMart 一键接入脚本
-#  将已安装的 OpenClaw 切换为 APIMart 中转节点，并配置 HTTPS 管理界面
-#  支持: Ubuntu / Debian / CentOS / RHEL / Rocky / Alma / OpenSUSE / macOS
+#  适用于：已安装官方 OpenClaw 的用户
+#  功能：注入 APIMart 模型配置 + 安装 OpenClaw Manager 管理界面
+#  支持: Ubuntu / Debian / CentOS / RHEL / Rocky / Alma / OpenSUSE
 #  用法: bash <(curl -fsSL https://raw.githubusercontent.com/zhihong-apimart/OpenClaw-Manager-Releases/main/use-apimart.sh) YOUR_API_KEY
 # =============================================================================
 set -euo pipefail
 
-# ---------- 颜色（终端不支持时自动降级）----------
+# ---------- 颜色 ----------
 if [ -t 1 ] && command -v tput &>/dev/null && tput colors &>/dev/null 2>&1; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
-    BG_RED='\033[41m'
+    CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'; BG_RED='\033[41m'
 else
     RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''; BG_RED=''
 fi
@@ -19,6 +19,22 @@ info()    { echo -e "${GREEN}[✓]${RESET} $*"; }
 warn()    { echo -e "${YELLOW}[!]${RESET} $*"; }
 error()   { echo -e "${RED}[✗]${RESET} $*" >&2; exit 1; }
 section() { echo -e "\n${CYAN}${BOLD}>>> $*${RESET}"; }
+
+# ---------- 常量（与 install.sh 保持一致）----------
+INSTALL_DIR="/opt/openclaw-manager"
+BIN_PATH="${INSTALL_DIR}/openclaw-manager"
+WRAPPER_SCRIPT="${INSTALL_DIR}/openclaw-manager-service"
+LOG_FILE="/var/log/openclaw-manager.log"
+PIDFILE="/var/run/openclaw-manager.pid"
+SERVICE_NAME="openclaw-manager"
+WEB_PORT="51942"
+NGINX_PORT="51943"
+NGINX_HTPASSWD="/etc/nginx/.openclaw_htpasswd"
+NGINX_CONF="/etc/nginx/conf.d/openclaw-manager.conf"
+DEFAULT_USER="apimart"
+DEFAULT_PASS="apimart"
+GITHUB_REPO="zhihong-apimart/OpenClaw-Manager-Releases"
+LATEST_URL="https://github.com/${GITHUB_REPO}/releases/latest/download"
 
 # =============================================================================
 echo ""
@@ -29,32 +45,43 @@ echo "  ║      🦞  APIMart 一键接入脚本                ║"
 echo "  ║                                              ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo -e "${RESET}"
-echo -e "  将你的 OpenClaw 接入 APIMart，即可畅享全球顶尖 AI 模型"
+echo -e "  为已有的 OpenClaw 注入 APIMart 模型，并安装可视化管理界面"
 echo ""
 
 # =============================================================================
-#  Step 1: 检查依赖
+#  Step 1: 检查环境
 # =============================================================================
 section "Step 1/5  检查环境"
-
-# 自动安装 jq
-if ! command -v jq &>/dev/null; then
-    echo -e "    ... 正在安装 jq..."
-    if   command -v apt-get &>/dev/null; then
-        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
-        apt-get install -y -qq -o Dpkg::Use-Pty=0 jq 2>/dev/null
-    elif command -v yum  &>/dev/null; then yum  install -y -q jq 2>/dev/null
-    elif command -v dnf  &>/dev/null; then dnf  install -y -q jq 2>/dev/null
-    elif command -v brew &>/dev/null; then brew install -q jq  2>/dev/null
-    elif command -v apk  &>/dev/null; then apk  add -q    jq  2>/dev/null
-    else error "无法自动安装 jq，请手动执行: apt install jq"; fi
-    command -v jq &>/dev/null || error "jq 安装失败，请联系技术支持"
-fi
-info "jq ✓"
 
 command -v openclaw &>/dev/null || \
     error "未检测到 OpenClaw，请先安装官方龙虾: curl -fsSL https://openclaw.ai/install.sh | bash"
 info "OpenClaw $(openclaw --version 2>/dev/null | head -1) ✓"
+
+if ! command -v jq &>/dev/null; then
+    echo -e "    ... 安装 jq..."
+    if   command -v apt-get &>/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq 2>/dev/null
+    elif command -v yum     &>/dev/null; then yum install -y -q jq 2>/dev/null
+    elif command -v dnf     &>/dev/null; then dnf install -y -q jq 2>/dev/null
+    else error "无法自动安装 jq，请手动执行: apt install jq"; fi
+fi
+info "jq ✓"
+
+if ! command -v python3 &>/dev/null; then
+    if   command -v apt-get &>/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 2>/dev/null
+    elif command -v yum     &>/dev/null; then yum install -y -q python3 2>/dev/null
+    elif command -v dnf     &>/dev/null; then dnf install -y -q python3 2>/dev/null
+    fi
+fi
+info "python3 ✓"
+
+# 检测架构
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64)  ARCH_SUFFIX="x64"   ;;
+    aarch64) ARCH_SUFFIX="arm64" ;;
+    *) error "不支持的架构: $ARCH（仅支持 x86_64 / aarch64）" ;;
+esac
+info "架构: $ARCH ✓"
 
 # =============================================================================
 #  Step 2: API Key
@@ -152,45 +179,45 @@ PROVIDERS=$(jq -n --arg host "$HOST" --arg key "$API_KEY" '{
 }')
 
 # =============================================================================
-#  Step 4: 写入配置 + 重启 Gateway
+#  Step 4: 注入 APIMart 配置到所有已有 OpenClaw 实例
 # =============================================================================
-section "Step 4/5  写入配置并重启"
+section "Step 4/5  注入 APIMart 配置（保留原有数据）"
 
 HOME_DIR="$HOME"
 ALL_CONFIGS=()
-[ -f "$HOME_DIR/.openclaw/openclaw.json" ]   && ALL_CONFIGS+=("$HOME_DIR/.openclaw/openclaw.json")
+[ -f "$HOME_DIR/.openclaw/openclaw.json" ] && ALL_CONFIGS+=("$HOME_DIR/.openclaw/openclaw.json")
 for d in "$HOME_DIR"/.openclaw-*/; do
     [ -f "${d}openclaw.json" ] && ALL_CONFIGS+=("${d}openclaw.json")
 done
 
-# 没有配置文件则自动创建
 if [ ${#ALL_CONFIGS[@]} -eq 0 ]; then
+    # 没有找到已有配置，创建默认的
     mkdir -p "$HOME_DIR/.openclaw"
     echo '{"models":{},"agents":{"defaults":{"model":{"primary":""}}}}' \
         > "$HOME_DIR/.openclaw/openclaw.json"
     ALL_CONFIGS+=("$HOME_DIR/.openclaw/openclaw.json")
-    info "配置目录已创建 ✓"
+    info "已创建默认配置目录 ✓"
 fi
 
-# 写入 providers + 默认模型
 UPDATED=0
 for cfg in "${ALL_CONFIGS[@]}"; do
+    # 备份原始配置
     cp "$cfg" "${cfg}.before-apimart" 2>/dev/null || true
     TEMP=$(mktemp)
     if jq --argjson p "$PROVIDERS" --arg m "$DEFAULT_MODEL" \
         '.models.providers = $p | .agents.defaults.model.primary = $m' \
         "$cfg" > "$TEMP" 2>/dev/null && [ -s "$TEMP" ]; then
         mv "$TEMP" "$cfg"
-        info "配置已写入: $cfg ✓"
+        info "APIMart 配置已写入: $cfg ✓"
         UPDATED=$((UPDATED+1))
     else
         rm -f "$TEMP"
         warn "写入失败: $cfg"
     fi
 done
-[ "$UPDATED" -eq 0 ] && error "配置写入失败，请检查 OpenClaw 是否正确安装"
+[ "$UPDATED" -eq 0 ] && error "配置写入失败"
 
-# 确保 gateway.mode=local 并开放 controlUi
+# 确保 gateway.mode=local
 for cfg in "${ALL_CONFIGS[@]}"; do
     python3 - "$cfg" << 'PYEOF'
 import json, sys
@@ -202,175 +229,224 @@ if gw.get('mode') != 'local':
     gw['mode'] = 'local'; changed = True
 if gw.get('bind') not in ('lan', 'auto'):
     gw['bind'] = 'lan'; changed = True
-cui = gw.setdefault('controlUi', {})
-if cui.get('allowedOrigins') != ['*']:
-    cui['allowedOrigins'] = ['*']; changed = True
-# 关闭设备配对要求，允许浏览器直接用 token 连接管理界面
-if not cui.get('dangerouslyDisableDeviceAuth'):
-    cui['dangerouslyDisableDeviceAuth'] = True; changed = True
 if changed:
     with open(path, 'w') as f: json.dump(d, f, indent=2)
-    print("gateway config patched")
 PYEOF
 done
 
-# 重启 Gateway
+# 重启 openclaw gateway（让新的 provider 配置生效）
 echo -e "    ... 重启 OpenClaw Gateway..."
 if openclaw gateway restart &>/dev/null 2>&1; then
-    sleep 3
-    info "Gateway 已重启 ✓"
+    sleep 2
+    info "OpenClaw Gateway 已重启 ✓"
 else
-    warn "Gateway 重启失败，请手动执行: openclaw gateway restart"
+    warn "Gateway 重启失败，请稍后手动执行: openclaw gateway restart"
 fi
 
-# 读取 Gateway Token
-GATEWAY_PORT=18789
-GW_TOKEN=""
-for cfg in "${ALL_CONFIGS[@]}"; do
-    _tok=$(python3 -c "
-import json
-try:
-    with open('${cfg}') as f: d=json.load(f)
-    print(d.get('gateway',{}).get('auth',{}).get('token',''))
-except: pass
-" 2>/dev/null || true)
-    [ -n "$_tok" ] && GW_TOKEN="$_tok" && break
-done
-
 # =============================================================================
-#  Step 5: Nginx + 自签证书（让管理界面可以在浏览器正常打开）
+#  Step 5: 安装 OpenClaw Manager
 # =============================================================================
-section "Step 5/5  配置管理界面 HTTPS 访问"
+section "Step 5/5  安装 OpenClaw Manager 管理界面"
 
-# 获取公网 IP
-SERVER_IP=""
-for ip_url in "https://api.ipify.org" "https://ip.sb" "https://ifconfig.me"; do
-    SERVER_IP=$(curl -fsS --max-time 4 "$ip_url" 2>/dev/null | tr -d '[:space:]') && \
-        [[ "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break || SERVER_IP=""
-done
-[ -z "$SERVER_IP" ] && SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}') || true
-[ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
-
-NGINX_HTTPS_PORT=18790
-CERT_DIR="/etc/openclaw-certs"
-NGINX_CONF="/etc/nginx/conf.d/openclaw-manager.conf"
-
-NGINX_OK=false
-
-# macOS 跳过 nginx（通常本机访问，用 http 即可）
-if [[ "$(uname)" == "Darwin" ]]; then
-    warn "macOS 检测到，跳过 Nginx 配置（请直接用 http://localhost:${GATEWAY_PORT} 访问）"
-else
-    # 安装 nginx 和 openssl
-    echo -e "    ... 安装 nginx / openssl（如已安装则跳过）..."
-    if command -v apt-get &>/dev/null; then
-        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
-        apt-get install -y -qq -o Dpkg::Use-Pty=0 nginx openssl 2>/dev/null && NGINX_OK=true
-    elif command -v yum &>/dev/null; then
-        yum install -y -q nginx openssl 2>/dev/null && NGINX_OK=true
-    elif command -v dnf &>/dev/null; then
-        dnf install -y -q nginx openssl 2>/dev/null && NGINX_OK=true
-    else
-        warn "无法自动安装 nginx，管理界面将使用 http 访问"
+# 5a. 安装依赖
+pkg_updated=false
+pkg_update_once() {
+    $pkg_updated && return
+    if   command -v apt-get &>/dev/null; then apt-get update -qq -y 2>/dev/null || true
+    elif command -v dnf     &>/dev/null; then dnf makecache -q 2>/dev/null || true
+    elif command -v yum     &>/dev/null; then yum makecache -q 2>/dev/null || true
     fi
+    pkg_updated=true
+}
 
-    if $NGINX_OK; then
-        # 生成自签证书（绑定服务器 IP，有效期 10 年）
-        mkdir -p "$CERT_DIR"
-        if [ ! -f "$CERT_DIR/openclaw.crt" ] || [ ! -f "$CERT_DIR/openclaw.key" ]; then
-            echo -e "    ... 生成 HTTPS 自签证书..."
-            openssl req -x509 -nodes -newkey rsa:2048 \
-                -keyout "$CERT_DIR/openclaw.key" \
-                -out    "$CERT_DIR/openclaw.crt" \
-                -days   3650 \
-                -subj   "/CN=${SERVER_IP}/O=APIMart/C=CN" \
-                -addext "subjectAltName=IP:${SERVER_IP},IP:127.0.0.1" \
-                2>/dev/null
-            chmod 600 "$CERT_DIR/openclaw.key"
-            info "HTTPS 证书已生成 ✓"
+for pkg_cmd in "nginx:nginx" "htpasswd:apache2-utils:httpd-tools" "curl:curl"; do
+    cmd=$(echo "$pkg_cmd" | cut -d: -f1)
+    pkg=$(echo "$pkg_cmd" | cut -d: -f2)
+    alt=$(echo "$pkg_cmd" | cut -d: -f3)
+    if ! command -v "$cmd" &>/dev/null; then
+        echo -e "    ... 安装 ${pkg}..."
+        pkg_update_once
+        if   command -v apt-get &>/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" 2>/dev/null || true
+        elif command -v dnf     &>/dev/null; then dnf install -y -q "${alt:-$pkg}" 2>/dev/null || true
+        elif command -v yum     &>/dev/null; then yum install -y -q "${alt:-$pkg}" 2>/dev/null || true
+        fi
+    fi
+done
+info "nginx / htpasswd ✓"
+
+# 5b. 停止旧版 Manager（升级模式）
+if [[ -f "$BIN_PATH" ]]; then
+    CURRENT_VER=$("$BIN_PATH" --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "旧版本")
+    warn "检测到已安装: ${CURRENT_VER}，执行升级..."
+    systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null && { systemctl stop "$SERVICE_NAME" || true; sleep 2; }
+fi
+command -v pkill &>/dev/null && pkill -f "openclaw-manager$" 2>/dev/null || true
+sleep 1
+
+# 5c. 下载 Manager 二进制
+mkdir -p "$INSTALL_DIR"
+DOWNLOAD_URL="${LATEST_URL}/openclaw-manager-linux-${ARCH_SUFFIX}"
+DOWNLOAD_TMP="${INSTALL_DIR}/openclaw-manager.tmp"
+echo -e "    ... 下载 OpenClaw Manager..."
+
+DOWNLOAD_OK=false
+curl -fSL --retry 3 --retry-delay 3 --connect-timeout 15 --progress-bar \
+    -o "$DOWNLOAD_TMP" "$DOWNLOAD_URL" && DOWNLOAD_OK=true || true
+
+[[ "$DOWNLOAD_OK" != "true" || ! -s "$DOWNLOAD_TMP" ]] && {
+    rm -f "$DOWNLOAD_TMP"
+    error "下载失败！请检查网络后重试\n  地址: ${DOWNLOAD_URL}"
+}
+[[ -f "$BIN_PATH" ]] && cp "$BIN_PATH" "${BIN_PATH}.bak-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+mv "$DOWNLOAD_TMP" "$BIN_PATH"
+chmod +x "$BIN_PATH"
+info "Manager 下载完成 ✓"
+
+# 5d. Wrapper 脚本
+touch "$LOG_FILE"; chmod 644 "$LOG_FILE"
+cat > "$WRAPPER_SCRIPT" << 'WRAPPER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+BIN="/opt/openclaw-manager/openclaw-manager"
+LOG="/var/log/openclaw-manager.log"
+PIDFILE="/var/run/openclaw-manager.pid"
+export HOME=/root
+case "${1:-start}" in
+    start)
+        "$BIN" >> "$LOG" 2>&1 &
+        LAUNCHER_PID=$!
+        sleep 3
+        MAIN_PID=$(pgrep -f "openclaw-manager$" | head -1 || echo "")
+        if [[ -n "$MAIN_PID" ]]; then
+            echo "$MAIN_PID" > "$PIDFILE"
+            echo "OpenClaw Manager started (PID=$MAIN_PID)"
         else
-            info "HTTPS 证书已存在，跳过生成 ✓"
+            echo "$LAUNCHER_PID" > "$PIDFILE"
+            echo "OpenClaw Manager started (launcher PID=$LAUNCHER_PID)"
         fi
+        ;;
+    stop)
+        [[ -f "$PIDFILE" ]] && { PID=$(cat "$PIDFILE" 2>/dev/null || echo ""); [[ -n "$PID" ]] && kill "$PID" 2>/dev/null || true; rm -f "$PIDFILE"; }
+        command -v pkill &>/dev/null && pkill -f "openclaw-manager$" 2>/dev/null || true
+        echo "OpenClaw Manager stopped"
+        ;;
+    status) "$BIN" --status 2>&1 || true ;;
+esac
+WRAPPER_EOF
+chmod +x "$WRAPPER_SCRIPT"
 
-        # 构建 nginx 配置
-        # 如果有 token，直接在 location / 做跳转，把 token 注入 URL 参数
-        if [ -n "$GW_TOKEN" ]; then
-            WS_REDIRECT="wss://${SERVER_IP}:${NGINX_HTTPS_PORT}"
-            MANAGER_LOCATION="
-        # 访问根路径时自动携带 token 跳转到管理界面
-        location = / {
-            return 302 /chat?wsUrl=${WS_REDIRECT}&token=${GW_TOKEN};
-        }"
-        else
-            MANAGER_LOCATION=""
-        fi
+# 5e. systemd 服务
+cat > "/etc/systemd/system/${SERVICE_NAME}.service" << UNIT_EOF
+[Unit]
+Description=OpenClaw Manager - AI Gateway Management Tool
+After=network-online.target
+Wants=network-online.target
 
-        # 在 nginx.conf http 块里注入 connection_upgrade map（幂等）
-        if ! grep -q "connection_upgrade" /etc/nginx/nginx.conf 2>/dev/null; then
-            sed -i '/http {/a\    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }' /etc/nginx/nginx.conf
-        fi
+[Service]
+Type=forking
+PIDFile=${PIDFILE}
+ExecStart=${WRAPPER_SCRIPT} start
+ExecStop=${WRAPPER_SCRIPT} stop
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=20
+Environment=HOME=/root
+StandardOutput=append:${LOG_FILE}
+StandardError=append:${LOG_FILE}
+NoNewPrivileges=true
 
-        cat > "$NGINX_CONF" << NGINX_EOF
-# APIMart OpenClaw Manager UI — 由 use-apimart.sh 自动生成
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME" --quiet
+info "systemd 服务已配置 ✓"
+
+# 5f. Nginx 访问控制（Basic Auth）
+# 密码文件（首次安装写默认密码，升级保留已有密码）
+if [[ ! -f "$NGINX_HTPASSWD" ]] && command -v htpasswd &>/dev/null; then
+    htpasswd -cb "$NGINX_HTPASSWD" "$DEFAULT_USER" "$DEFAULT_PASS" 2>/dev/null
+    chmod 640 "$NGINX_HTPASSWD"
+fi
+
+cat > "$NGINX_CONF" << NGINX_EOF
+# OpenClaw Manager — 由 use-apimart.sh 生成
 server {
-    listen ${NGINX_HTTPS_PORT} ssl;
+    listen ${NGINX_PORT};
     server_name _;
 
-    ssl_certificate     ${CERT_DIR}/openclaw.crt;
-    ssl_certificate_key ${CERT_DIR}/openclaw.key;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-${MANAGER_LOCATION}
+    auth_basic           "OpenClaw Manager";
+    auth_basic_user_file ${NGINX_HTPASSWD};
 
-    # 统一反代所有请求（HTTP + WebSocket 升级）
+    access_log /var/log/nginx/openclaw-manager.access.log;
+    error_log  /var/log/nginx/openclaw-manager.error.log;
+
     location / {
-        proxy_pass         http://127.0.0.1:${GATEWAY_PORT};
+        proxy_pass         http://127.0.0.1:${WEB_PORT};
         proxy_http_version 1.1;
         proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection \$connection_upgrade;
+        proxy_set_header   Connection "upgrade";
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
         proxy_read_timeout 3600s;
     }
 }
 NGINX_EOF
 
-        # 测试并重载/启动 nginx
-        if nginx -t 2>/dev/null; then
-            if systemctl is-active --quiet nginx 2>/dev/null; then
-                systemctl reload nginx 2>/dev/null && info "Nginx 已重载 ✓"
-            else
-                systemctl enable --now nginx 2>/dev/null || nginx 2>/dev/null
-                info "Nginx 已启动 ✓"
-            fi
-        else
-            warn "Nginx 配置测试失败，管理界面将使用 http 访问"
-            NGINX_OK=false
-        fi
+# 删除之前 use-apimart.sh 可能写入的旧 https 配置（端口 18790）
+rm -f /etc/nginx/conf.d/openclaw-manager-https.conf 2>/dev/null || true
+
+nginx -t 2>/dev/null && {
+    systemctl is-active --quiet nginx 2>/dev/null && systemctl reload nginx || systemctl enable --now nginx 2>/dev/null
+    info "Nginx 访问控制已配置 ✓"
+} || warn "Nginx 配置测试失败，请检查 /etc/nginx/conf.d/openclaw-manager.conf"
+
+# 5g. 封锁内部端口（只允许本机访问 51942）
+if command -v iptables &>/dev/null; then
+    iptables -D INPUT -i lo -p tcp --dport "${WEB_PORT}" -j ACCEPT 2>/dev/null || true
+    iptables -D INPUT -p tcp --dport "${WEB_PORT}" -j DROP 2>/dev/null || true
+    iptables -I INPUT 1 -p tcp --dport "${WEB_PORT}" -j DROP
+    iptables -I INPUT 1 -i lo -p tcp --dport "${WEB_PORT}" -j ACCEPT
+    if command -v iptables-save &>/dev/null; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     fi
+    info "内部端口 ${WEB_PORT} 已封锁（仅本机可访问）✓"
 fi
 
-# =============================================================================
-#  构建最终访问链接
-# =============================================================================
-if $NGINX_OK; then
-    MANAGER_URL="https://${SERVER_IP}:${NGINX_HTTPS_PORT}"
-    MANAGER_DIRECT_NOTE="（浏览器会提示「不安全」，点「高级」→「继续前往」即可，这是正常的）"
-else
-    # 回退到 http，附带 token 参数
-    if [ -n "$GW_TOKEN" ]; then
-        MANAGER_URL="http://${SERVER_IP}:${GATEWAY_PORT}"
-        MANAGER_DIRECT_NOTE="（如无法打开，请在「网关令牌」处填入：${GW_TOKEN}）"
-    else
-        MANAGER_URL="http://${SERVER_IP}:${GATEWAY_PORT}"
-        MANAGER_DIRECT_NOTE=""
+# 5h. 启动 Manager
+systemctl start "$SERVICE_NAME" || true
+
+# 等待启动（最多 60 秒）
+echo -e "    ... 等待 Manager 启动（首次运行可能需要 30 秒）..."
+MAX_WAIT=60; STARTED=false
+for i in $(seq 1 $MAX_WAIT); do
+    sleep 1
+    if ss -tlnp 2>/dev/null | grep -q ":${WEB_PORT}" || \
+       netstat -tlnp 2>/dev/null | grep -q ":${WEB_PORT}"; then
+        STARTED=true; break
     fi
-fi
+    (( i % 15 == 0 )) && echo "    已等待 ${i}s，仍在初始化中..."
+done
+$STARTED && info "OpenClaw Manager 已启动 ✓" || warn "启动超时，服务可能仍在后台初始化，稍等片刻再访问"
 
 # =============================================================================
-#  完成 —— 傻瓜式指引
+#  获取公网 IP
+# =============================================================================
+PUBLIC_IP=""
+for ip_svc in "https://api.ipify.org" "https://ip.sb" "https://ifconfig.me"; do
+    PUBLIC_IP=$(curl -fsS --max-time 4 "$ip_svc" 2>/dev/null | tr -d '[:space:]') && \
+        [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break || PUBLIC_IP=""
+done
+[[ -z "$PUBLIC_IP" ]] && PUBLIC_IP=$(hostname -I 2>/dev/null | awk '{print $1}') || true
+[[ -z "$PUBLIC_IP" ]] && PUBLIC_IP="你的服务器IP"
+
+MANAGER_URL="http://${PUBLIC_IP}:${NGINX_PORT}"
+
+# =============================================================================
+#  完成
 # =============================================================================
 echo ""
 echo -e "${GREEN}${BOLD}"
@@ -380,30 +456,40 @@ echo "  ║      🎉  接入成功！全部搞定！                        ║
 echo "  ║                                                      ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
-echo -e "  节点：     ${BOLD}${NODE_NAME}${RESET}"
-echo -e "  默认模型： ${BOLD}${MODEL_NAME}${RESET}"
+echo -e "  已接入节点：  ${BOLD}${NODE_NAME}${RESET}"
+echo -e "  默认模型：    ${BOLD}${MODEL_NAME}${RESET}"
+echo -e "  原有数据：    ${BOLD}完整保留 ✓${RESET}"
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo -e "  ${BOLD}💬 开始使用 AI：${RESET}"
 echo ""
-echo -e "     打开飞书（或 Telegram），找到你的机器人，直接发消息就行 😄"
+echo -e "     打开飞书（或 Telegram），找到你的机器人，直接发消息 😄"
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
-echo -e "  ${BOLD}🖥️  管理界面（切换模型 / 查看日志 / 管理配置）：${RESET}"
+echo -e "  ${BOLD}🖥️  管理界面（切换模型 / 查看日志 / 管理实例）：${RESET}"
 echo ""
 echo -e "     ${CYAN}${BOLD}👉  ${MANAGER_URL}${RESET}"
 echo ""
-echo -e "     ${MANAGER_DIRECT_NOTE}"
+echo -e "${BOLD}${YELLOW}  ┌─────────────────────────────────────────┐${RESET}"
+echo -e "${BOLD}${YELLOW}  │   🔐 管理界面默认登录账号               │${RESET}"
+echo -e "${BOLD}${YELLOW}  │                                         │${RESET}"
+echo -e "${BOLD}${YELLOW}  │   用户名：${RESET}${BOLD}  apimart  ${RESET}${BOLD}${YELLOW}                   │${RESET}"
+echo -e "${BOLD}${YELLOW}  │   密  码：${RESET}${BOLD}  apimart  ${RESET}${BOLD}${YELLOW}                   │${RESET}"
+echo -e "${BOLD}${YELLOW}  │                                         │${RESET}"
+echo -e "${BOLD}${YELLOW}  │   ⚠️  请登录后修改密码！                │${RESET}"
+echo -e "${BOLD}${YELLOW}  └─────────────────────────────────────────┘${RESET}"
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
-echo -e "  ${BG_RED}${BOLD}  ⚠️  以下命令是【恢复原状】用的，没问题请直接忽略  ${RESET}"
+echo -e "  ${BG_RED}${BOLD}  ⚠️  以下是【恢复原状】命令，没问题请直接忽略  ${RESET}"
 echo ""
-echo -e "  ${RED}  出了问题才执行这条（粘贴到终端回车）：${RESET}"
+echo -e "  ${RED}  出了问题才执行（粘贴到终端回车）：${RESET}"
 echo -e "  ${RED}  cp ~/.openclaw/openclaw.json.before-apimart ~/.openclaw/openclaw.json && openclaw gateway restart${RESET}"
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+echo -e "  ${YELLOW}⚠️  打不开管理界面？请在服务器防火墙/安全组放通 TCP ${NGINX_PORT} 端口${RESET}"
 echo ""
 echo -e "  有问题？联系 APIMart 技术支持：${CYAN}https://apimart.ai${RESET}"
 echo ""
