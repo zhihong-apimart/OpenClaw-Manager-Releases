@@ -367,7 +367,7 @@ info "systemd 服务已配置 ✓"
 # 密码文件（首次安装写默认密码，升级保留已有密码）
 if [[ ! -f "$NGINX_HTPASSWD" ]] && command -v htpasswd &>/dev/null; then
     htpasswd -cb "$NGINX_HTPASSWD" "$DEFAULT_USER" "$DEFAULT_PASS" 2>/dev/null
-    chmod 640 "$NGINX_HTPASSWD"
+    chmod 644 "$NGINX_HTPASSWD"
 fi
 
 cat > "$NGINX_CONF" << NGINX_EOF
