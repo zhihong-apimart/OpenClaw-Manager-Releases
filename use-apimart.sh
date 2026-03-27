@@ -189,10 +189,28 @@ for cfg in "${ALL_CONFIGS[@]}"; do
 done
 [ "$UPDATED" -eq 0 ] && error "配置写入失败，请检查 OpenClaw 是否正确安装"
 
+# 确保 gateway.mode=local（OpenClaw 要求，否则 gateway 无法启动）
+for cfg in "${ALL_CONFIGS[@]}"; do
+    python3 - "$cfg" << 'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as f: d = json.load(f)
+changed = False
+gw = d.setdefault('gateway', {})
+if gw.get('mode') != 'local':
+    gw['mode'] = 'local'; changed = True
+if gw.get('bind') not in ('lan', 'auto'):
+    gw['bind'] = 'lan'; changed = True
+if changed:
+    with open(path, 'w') as f: json.dump(d, f, indent=2)
+    print("gateway.mode patched")
+PYEOF
+done
+
 # 重启 Gateway
 echo -e "    ... 重启 OpenClaw Gateway..."
 if openclaw gateway restart &>/dev/null 2>&1; then
-    sleep 2
+    sleep 3
     info "Gateway 已重启 ✓"
 else
     warn "Gateway 重启失败，请手动执行: openclaw gateway restart"
