@@ -3,7 +3,7 @@
 #  APIMart 一键接入脚本
 #  将已安装的 OpenClaw 切换为 APIMart 中转节点
 #  支持: Ubuntu / Debian / CentOS / RHEL / Rocky / Alma / OpenSUSE / macOS
-#  用法: curl -fsSLo use-apimart.sh https://raw.githubusercontent.com/zhihong-apimart/OpenClaw-Manager-Releases/main/use-apimart.sh && bash use-apimart.sh YOUR_API_KEY
+#  用法: bash <(curl -fsSL https://raw.githubusercontent.com/zhihong-apimart/OpenClaw-Manager-Releases/main/use-apimart.sh) YOUR_API_KEY
 # =============================================================================
 set -euo pipefail
 
@@ -11,8 +11,10 @@ set -euo pipefail
 if [ -t 1 ] && command -v tput &>/dev/null && tput colors &>/dev/null 2>&1; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
     CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+    BG_RED='\033[41m'; WHITE='\033[0;37m'
 else
     RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''
+    BG_RED=''; WHITE=''
 fi
 info()    { echo -e "${GREEN}[✓]${RESET} $*"; }
 warn()    { echo -e "${YELLOW}[!]${RESET} $*"; }
@@ -217,23 +219,61 @@ else
 fi
 
 # =============================================================================
-#  完成
+#  获取本机 IP（用于显示 Manager UI 地址）
+# =============================================================================
+GATEWAY_PORT=18789
+# 优先用公网 IP，其次局域网 IP
+SERVER_IP=""
+# 尝试获取公网 IP（多个来源容错）
+for ip_url in "https://api.ipify.org" "https://ip.sb" "https://ifconfig.me"; do
+    SERVER_IP=$(curl -fsS --max-time 3 "$ip_url" 2>/dev/null | tr -d '[:space:]') && break || true
+done
+# 公网获取失败则用局域网 IP
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}') || SERVER_IP="你的服务器IP"
+fi
+MANAGER_URL="http://${SERVER_IP}:${GATEWAY_PORT}"
+
+# =============================================================================
+#  完成 —— 傻瓜式指引
 # =============================================================================
 echo ""
 echo -e "${GREEN}${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║                                                      ║"
-echo "  ║      🎉  接入成功！                                  ║"
+echo "  ║      🎉  接入成功！全部搞定！                        ║"
 echo "  ║                                                      ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
 echo -e "  节点：     ${BOLD}${NODE_NAME}${RESET}"
 echo -e "  默认模型： ${BOLD}${MODEL_NAME}${RESET}"
 echo ""
+
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "  重新打开飞书 / Telegram，即可使用 APIMart 全系模型"
+echo -e "  ${BOLD}🎯 接下来只需 2 步，就能开始聊天：${RESET}"
+echo ""
+echo -e "  ${BOLD}第 1 步${RESET}  打开飞书（或 Telegram），找到你的机器人，直接发消息就行"
+echo -e "  ${BOLD}第 2 步${RESET}  没有更多步骤了，就这样 😄"
+echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
-echo -e "  ${BOLD}出问题？一条命令恢复原状：${RESET}"
-echo -e "  ${CYAN}cp ~/.openclaw/openclaw.json.before-apimart ~/.openclaw/openclaw.json && openclaw gateway restart${RESET}"
+echo -e "  ${BOLD}🖥️  管理界面地址（用浏览器打开）：${RESET}"
+echo ""
+echo -e "    ${CYAN}${BOLD}  👉  ${MANAGER_URL}  ${RESET}"
+echo ""
+echo -e "  可以在这里查看运行状态、切换模型、管理频道"
+echo ""
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+
+# 恢复命令 —— 用红色背景高亮，明确告知"没问题不要动"
+echo -e "  ${BG_RED}${BOLD}  ⚠️  以下是【恢复原状】命令，没问题请忽略，不要随手复制执行  ${RESET}"
+echo ""
+echo -e "  ${RED}${BOLD}  如果出了问题，才执行下面这条命令（粘贴到终端回车）：${RESET}"
+echo ""
+echo -e "  ${RED}  cp ~/.openclaw/openclaw.json.before-apimart ~/.openclaw/openclaw.json && openclaw gateway restart${RESET}"
+echo ""
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo ""
+echo -e "  有问题？联系 APIMart 技术支持：${CYAN}https://apimart.ai${RESET}"
 echo ""
