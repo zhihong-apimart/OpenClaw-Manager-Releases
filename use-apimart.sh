@@ -302,6 +302,11 @@ else
             MANAGER_LOCATION=""
         fi
 
+        # 在 nginx.conf http 块里注入 connection_upgrade map（幂等）
+        if ! grep -q "connection_upgrade" /etc/nginx/nginx.conf 2>/dev/null; then
+            sed -i '/http {/a\    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '"''"' close;\n    }' /etc/nginx/nginx.conf
+        fi
+
         cat > "$NGINX_CONF" << NGINX_EOF
 # APIMart OpenClaw Manager UI — 由 use-apimart.sh 自动生成
 server {
@@ -314,23 +319,16 @@ server {
     ssl_ciphers         HIGH:!aNULL:!MD5;
 ${MANAGER_LOCATION}
 
-    # 反代 HTTP 请求到 OpenClaw Gateway
+    # 统一反代所有请求（HTTP + WebSocket 升级）
     location / {
         proxy_pass         http://127.0.0.1:${GATEWAY_PORT};
         proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection \$connection_upgrade;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
-    }
-
-    # 反代 WebSocket（管理界面实时通信）
-    location /ws {
-        proxy_pass         http://127.0.0.1:${GATEWAY_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
-        proxy_set_header   Host \$host;
         proxy_read_timeout 3600s;
     }
 }
